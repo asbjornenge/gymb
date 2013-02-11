@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+###
+# Gymb - Github Python Markdown Blogger
+###
+
+import sys, os, json, argparse, uuid, codecs
+import misaka as m
+from mako.template import Template
+from mako.lookup import TemplateLookup
+
+open = codecs.open
+version_number = "0.1"
+config_file    = 'gymb.json'
+post_structure = {
+    "id"        : "",
+    "title"     : "",
+    "path"      : "",
+    "published" : False
+}
+
+mylookup = TemplateLookup(directories=['.'])
+gimp_template = """<%inherit file="base.html"/><%block name="content">${markdown}</%block>"""
+
+## Config actions
+#
+
+def read_config():
+    return json.loads(open(config_file, encoding="utf-8").read())
+
+def clean_config(config):
+    if config.has_key('markdown'):
+        del config['markdown']
+    for key in config:
+        if type(config[key]) == dict:
+            clean_config(config[key])
+
+def save_config(config):
+    clean_config(config)
+    open(config_file,'w',encoding="utf-8").write(json.dumps(config, sort_keys=True, indent=4, separators=(',', ' : ')))
+
+## Blog actions
+#
+
+def get_path(args):
+    path = args.path.split('/')
+    if len(path) > 2:
+        sys.exit("ERROR: Too long path. Gymb only support 1 level deep blogs.")
+    blog = path[0]
+    post = len(path) > 1 and path[1] or None
+    return blog, post
+
+def add_blog(config, args):
+    blog, post = get_path(args)
+    if blog not in config['blogs']:
+        if not os.path.exists(blog):
+            os.makedirs(blog)
+        config['blogs'].append(blog)
+        config[blog] = {}
+        save_config(config)
+        print "Added blog %s" % blog
+    if post != None:
+        if not post.endswith('.md'):
+            sys.exit("ERROR: For now posts need's to use the .md (markdown) extension.")
+        if not os.path.exists(args.path):
+            open(args.path, 'w', encoding="utf-8").close()
+        uid = uuid.uuid4().hex[:8]
+        config[blog][post] = post_structure
+        config[blog][post]['id'] = uid
+        config[blog][post]['path'] = args.path.replace('.md','.html')
+        print "Added %s to %s" % (post,blog)
+
+def del_blog(config, args):
+    print "removing blog"
+
+def meta_blog(config, args):
+    blog, post = get_path(args)
+    if post == None:
+        return
+    if args.title != None:
+        config[blog][post]['title'] = args.title
+    if args.published != None:
+        config[blog][post]['published'] = args.published
+
+## Build actions
+#
+
+def build(config, args):
+    makofiles = []
+    mdfiles = []
+    for (path, dirs, files) in os.walk('.'):
+        for file in files:
+            if file.endswith('.mako'):
+                makofiles.append('%s/%s' % (path, file))
+            if file.endswith('.md'):
+                mdfiles.append('%s/%s' % (path, file))
+    for mdf in mdfiles:
+        content  = m.html(open(mdf,"r",encoding="utf-8").read())
+        makofile = mdf.replace('.md','.mako')
+        if (makofile in makofiles):
+            template = open(makofile, encoding="utf-8").read()
+        else:
+            template = gimp_template
+        tmpl = Template(template, lookup=mylookup)
+        html = tmpl.render(markdown=content,config=config)
+        open(mdf.replace('.md','.html'),'w', encoding="utf-8").write(html)
+        blog_post = mdf.split('/')
+        if blog_post[1] in config['blogs']:
+            if blog_post[2] in config[blog_post[1]]:
+                config[blog_post[1]][blog_post[2]]['markdown'] = content
+    for mf in makofiles:
+        mdfile = mf.replace('.mako','.md')
+        if (mdfile not in mdfiles):
+            tmpl = Template(filename=mf, lookup=mylookup)
+            html = tmpl.render(config=config)
+            open(mf.replace('.mako','.html'),'w', encoding="utf-8").write(html)
+
+action_map = {
+    'build' : build,
+    'add'   : add_blog,
+    'del'   : del_blog,
+    'meta'  : meta_blog
+}
+
+parser = argparse.ArgumentParser(description='Gymb ~ The Github Python Markdown Blogger.')
+parser.add_argument('action', choices=['build','add','del','meta'], help='Add or del a blog or a post')
+parser.add_argument('--title', type=str, help='Post title')
+parser.add_argument('--published', type=str, help='Post publish date, use "now" for current date')
+parser.add_argument('path', nargs='?', type=str, help='Path to blog or post')
+parser.add_argument('--version', action='version', version='%(prog)s '+version_number)
+args = parser.parse_args()
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+    config = read_config()
+    action_map[args.action](config, args)
+    save_config(config)
